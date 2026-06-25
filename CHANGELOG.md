@@ -20,6 +20,7 @@ details that cannot be verified.
 - Uses QR-style two-column zigzag data placement.
 - Retains compression, CRC32, Reed-Solomon protection, and byte interleaving.
 - Added exact QR-carrier, standard QR-scanner, and camera-distortion tests.
+- Protected incompressible custom payload capacity: 875 bytes.
 
 ## Version 9 — Real-world field profile
 
@@ -28,6 +29,7 @@ details that cannot be verified.
 - Reduced color quantization to four levels per RGB channel.
 - Increased Reed-Solomon parity to 32 bytes per 255-byte block.
 - Added four finder targets and stronger camera stress tests.
+- Protected incompressible payload capacity: 2,659 bytes.
 
 ## Version 8 — QR-like large-module profile
 
@@ -35,6 +37,7 @@ details that cannot be verified.
 - Increased rendered modules to 31 × 31 pixels.
 - Added a four-module quiet zone.
 - Prioritized visual module size over the earlier density target.
+- Protected incompressible payload capacity: 16,384 bytes.
 
 ## Version 7 — Dense protected prototype
 
@@ -43,6 +46,7 @@ details that cannot be verified.
 - Added Reed-Solomon error correction and byte interleaving.
 - Added four-point perspective correction and larger calibration samples.
 - Used 16 RGB levels per channel for a protected capacity above 72 KiB.
+- Protected incompressible payload capacity: 78,985 bytes.
 
 ## Version 6 — Fixed-grid calibrated prototype
 
@@ -51,6 +55,7 @@ details that cannot be verified.
 - Used eight levels per RGB channel, providing nine bits per data cell.
 - Added three finder markers, an RGB reference palette, CRC32 validation,
   exact-image decoding, and experimental photo decoding.
+- CRC-checked payload capacity without Reed-Solomon protection: 9,430 bytes.
 
 ## Version 5
 

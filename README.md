@@ -28,6 +28,7 @@ carrier while encoding a second payload through calibrated RGB values.**
 - [Who is it for?](#who-is-it-for)
 - [How it works](#how-it-works)
 - [Current v10 profile](#current-v10-profile)
+- [Capacity comparison with QR Code](#capacity-comparison-with-qr-code)
 - [Installation](#installation)
 - [Usage](#usage)
 - [Camera decoding](#camera-decoding)
@@ -174,6 +175,67 @@ recoverable damage, and verifies the final bytes with CRC32.
 
 Compressible text can exceed the 875-byte incompressible limit because GDC
 applies zlib compression before capacity is checked.
+
+## Capacity comparison with QR Code
+
+Capacity comparisons are easy to make misleading because QR Code capacity
+changes with:
+
+- symbol version and module count;
+- numeric, alphanumeric, binary, or Kanji encoding mode;
+- error-correction level L, M, Q, or H.
+
+GDC stores arbitrary bytes, so the fairest traditional baseline is **QR binary
+mode**. DENSO WAVE's official capacity table gives:
+
+- **2,953 bytes** for the largest QR Code, Version 40 at correction level L;
+- **271 bytes** for QR Version 10-L, the same 57 × 57 matrix size used by
+  GDC v10.
+
+Sources: [DENSO WAVE QR version guide](https://www.qrcode.com/en/about/version.html),
+[official Version 1–10 capacity table](https://www.qrcode.com/en/about/versionPage/versionPage1_10.html),
+and [official Version 31–40 capacity table](https://www.qrcode.com/en/about/versionPage/versionPage31_40.html).
+
+### Historical GDC capacity versus the largest traditional QR Code
+
+The baseline below is QR Version 40-L at 2,953 binary bytes. Values for GDC
+v7–v10 are protected incompressible payload capacities after their configured
+error-correction overhead. GDC v6 predates Reed-Solomon protection, so its
+figure is CRC-checked payload capacity rather than an equally protected value.
+
+| GDC version | Recorded payload capacity | Relative to QR v40-L | Byte difference | Main design priority |
+|---|---:|---:|---:|---|
+| v1–v5 | Not verifiable | — | — | Historical prototypes are not present in the repository |
+| v6 | 9,430 bytes | **3.19×** | **+6,477 bytes** | Fixed 99 × 99 dense grid; CRC only |
+| v7 | 78,985 bytes | **26.75×** | **+76,032 bytes** | Maximum protected density |
+| v8 | 16,384 bytes | **5.55×** | **+13,431 bytes** | Larger, more visible modules |
+| v9 | 2,659 bytes | **0.90×** | **−294 bytes** | Camera-oriented field profile |
+| v10 | 875 bytes | **0.30×** | **−2,078 bytes** | Exact QR carrier and pure-white background |
+
+The table shows the project's central tradeoff: the densest prototypes stored
+far more than even the largest QR Code, but they were visually noisy and less
+practical for ordinary cameras. Versions 9 and 10 deliberately gave up absolute
+capacity to improve module size, color separation, QR recognition, and error
+recovery.
+
+### Current v10 versus a same-size traditional QR Code
+
+Comparing GDC v10 to QR Version 40 is physically unfair: Version 40 uses a
+177 × 177 matrix, while GDC v10 uses 57 × 57. Against a traditional QR Code
+with the **same Version 10 geometry**, GDC's 875-byte protected custom payload
+is larger at every QR error-correction level:
+
+| 57 × 57 carrier | Binary capacity | GDC v10 advantage |
+|---|---:|---:|
+| Traditional QR v10-L | 271 bytes | **3.23× / +604 bytes** |
+| Traditional QR v10-M | 213 bytes | **4.11× / +662 bytes** |
+| Traditional QR v10-Q | 151 bytes | **5.79× / +724 bytes** |
+| Traditional QR v10-H | 119 bytes | **7.35× / +756 bytes** |
+| **GDC v10 protected color payload** | **875 bytes** | — |
+
+GDC also retains a separately readable QR carrier string. The 875-byte figure
+describes only the custom GDC color payload; it does not count the fixed carrier
+text as additional user storage.
 
 ### Why the protected capacity is modest
 
