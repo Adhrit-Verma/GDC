@@ -7,26 +7,65 @@ import cv2
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter
 
-import gdc_v4 as gdc
+import gdc_v10 as gdc
 
 
 class GDCTest(unittest.TestCase):
     def test_real_world_field_profile(self):
-        # This profile deliberately prioritizes camera and print tolerance over
-        # the documentation's theoretical maximum density.
-        self.assertGreaterEqual(gdc.max_payload_bytes(), 2500)
-        self.assertEqual(gdc.CONTENT_SIDE, 73)
-        self.assertGreaterEqual(gdc.BLOCK_SIZE, 48)
+        self.assertGreaterEqual(gdc.max_payload_bytes(), 850)
+        self.assertEqual(gdc.QR_VERSION, 10)
+        self.assertEqual(gdc.CONTENT_SIDE, 57)
+        self.assertGreaterEqual(gdc.BLOCK_SIZE, 60)
         self.assertEqual(gdc.LEVEL_COUNT, 4)
         self.assertGreaterEqual(gdc.RS_PARITY_BYTES, 32)
 
+    def test_colored_symbol_preserves_exact_qr_carrier(self):
+        image, *_ = gdc.stream_to_image(gdc.build_stream(b"QR carrier check"))
+        logical = gdc.sample_grid_colors(
+            image,
+            gdc.fixed_side_blocks(),
+            gdc.fixed_side_blocks(),
+        )
+        start = gdc.QUIET_ZONE_BLOCKS
+        core = logical.crop(
+            (
+                start,
+                start,
+                start + gdc.CONTENT_SIDE,
+                start + gdc.CONTENT_SIDE,
+            )
+        )
+        pixels = core.load()
+        thresholded = tuple(
+            tuple((sum(pixels[col, row]) / 3) < 128 for col in range(gdc.CONTENT_SIDE))
+            for row in range(gdc.CONTENT_SIDE)
+        )
+        self.assertEqual(thresholded, gdc.qr_carrier_matrix())
+        for row in range(gdc.CONTENT_SIDE):
+            for col in range(gdc.CONTENT_SIDE):
+                if not gdc.qr_carrier_matrix()[row][col]:
+                    self.assertEqual(pixels[col, row], (255, 255, 255))
+
+    def test_standard_qr_decoder_reads_carrier(self):
+        image, *_ = gdc.stream_to_image(gdc.build_stream(b"GDC payload"))
+        bgr = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+        scanner_size = 1000
+        scanner_image = cv2.resize(
+            bgr,
+            (scanner_size, scanner_size),
+            interpolation=cv2.INTER_AREA,
+        )
+        value, points, _ = cv2.QRCodeDetector().detectAndDecode(scanner_image)
+        self.assertIsNotNone(points)
+        self.assertEqual(value, "GDC-V10-COLOR-CARRIER")
+
     def test_reed_solomon_recovers_interleaved_damage(self):
-        payload = os.urandom(2048)
+        payload = os.urandom(700)
         stream = bytearray(gdc.build_stream(payload))
         block_count = gdc.rs_block_count()
 
         # Damage eight transmitted positions belonging to one RS block. This
-        # remains below the twelve-byte correction limit without making every
+        # remains below the sixteen-byte correction limit without making every
         # block execute the expensive error-location path.
         damaged_block = 3
         for byte_index in range(8):
@@ -35,7 +74,7 @@ class GDCTest(unittest.TestCase):
         self.assertEqual(gdc.parse_stream(bytes(stream)), payload)
 
     def test_exact_image_round_trip(self):
-        payload = os.urandom(2048)
+        payload = os.urandom(700)
         image, *_ = gdc.stream_to_image(gdc.build_stream(payload))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "roundtrip.png"
@@ -82,7 +121,7 @@ class GDCTest(unittest.TestCase):
             self.assertEqual(gdc.photo_to_payload(path), payload)
 
     def test_field_profile_handles_small_blurred_camera_image(self):
-        payload = os.urandom(1800)
+        payload = os.urandom(700)
         image, *_ = gdc.stream_to_image(gdc.build_stream(payload))
         camera_image = image.resize((800, 800), Image.Resampling.LANCZOS)
         camera_image = camera_image.filter(ImageFilter.GaussianBlur(0.8))

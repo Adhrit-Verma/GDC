@@ -1,6 +1,5 @@
 import hashlib
 import struct
-import sys
 import zlib
 from functools import lru_cache
 from pathlib import Path
@@ -8,6 +7,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image
+import qrcode
+from qrcode.constants import ERROR_CORRECT_L
+from qrcode.util import pattern_position
 
 try:
     from reedsolo import RSCodec, ReedSolomonError
@@ -18,9 +20,10 @@ except ImportError as exc:
     ) from exc
 
 
-# GDC v10 uses a QR-first field profile: a Version-14-sized 73x73 matrix with
+# GDC v10 uses a QR-first field profile: a Version-10-sized 57x57 matrix with
 # standard-looking three-corner finders, separators, timing tracks, alignment
-# targets and quiet zone, followed by GDC color data and compact calibration.
+# target and quiet zone. White carrier modules stay pure white; calibrated RGB
+# values replace only dark carrier modules, matching conventional colored QR.
 MAGIC = b"GDC"
 VERSION = 10
 FLAG_COMPRESSED = 0x01
@@ -31,17 +34,15 @@ HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 # Fixed camera-friendly dense profile
 # ---------------------------------------------------------------------------
 
-CONTENT_SIDE = 73
+QR_VERSION = 10
+CONTENT_SIDE = 17 + 4 * QR_VERSION
 QUIET_ZONE_BLOCKS = 4
-BLOCK_SIZE = 49
+BLOCK_SIZE = 60
 MAX_IMAGE_SIZE = 4096
 
 MARKER_SIZE_BLOCKS = 7
 ALIGNMENT_PATTERN_SIZE = 5
-ALIGNMENT_CENTERS = (6, 26, 46, 66)
-PALETTE_SWATCH_SIZE = 2
-PALETTE_TOP = 9
-PALETTE_LEFT = 32
+ALIGNMENT_CENTERS = tuple(pattern_position(QR_VERSION))
 
 # 4 levels per channel = 64 RGB states = 6 bits per module. Wide 64-value
 # spacing is substantially more tolerant of printing, focus, exposure, JPEG,
@@ -49,7 +50,7 @@ PALETTE_LEFT = 32
 LEVEL_COUNT = 4
 BITS_PER_CHANNEL = 2
 BITS_PER_CELL = 6
-LEVEL_U8 = [32, 96, 160, 224]
+DATA_LEVEL_U8 = [8, 44, 80, 116]
 
 # RS(255, 223): 32 parity bytes correct up to 16 erroneous bytes per block.
 # Interleaving spreads localized image damage across independent RS blocks.
@@ -149,6 +150,8 @@ def in_format_information(row: int, col: int, side: int) -> bool:
 
 
 def in_version_information(row: int, col: int, side: int) -> bool:
+    if QR_VERSION < 7:
+        return False
     return (
         row < 6 and side - 11 <= col <= side - 9
     ) or (
@@ -156,35 +159,69 @@ def in_version_information(row: int, col: int, side: int) -> bool:
     )
 
 
-def palette_swatch_origin(channel: int, level: int) -> tuple[int, int]:
-    return (
-        PALETTE_TOP + channel * PALETTE_SWATCH_SIZE,
-        PALETTE_LEFT + level * PALETTE_SWATCH_SIZE,
+def is_qr_function_cell(row: int, col: int, side: int) -> bool:
+    return not (
+        not in_finder_or_separator(row, col, side)
+        and not in_alignment_pattern(row, col, side)
+        and not in_timing_pattern(row, col, side)
+        and not in_format_information(row, col, side)
+        and not in_version_information(row, col, side)
+        and not (row == side - 8 and col == 8)
     )
 
 
-def in_palette_swatch(row: int, col: int) -> bool:
-    for channel in range(3):
-        for level in range(LEVEL_COUNT):
-            top, left = palette_swatch_origin(channel, level)
-            if (
-                top <= row < top + PALETTE_SWATCH_SIZE
-                and left <= col < left + PALETTE_SWATCH_SIZE
-            ):
-                return True
-    return False
+@lru_cache(maxsize=None)
+def calibration_positions(side: int) -> tuple[tuple[int, int], ...]:
+    candidates = [
+        (row, col)
+        for row in range(9, side - 8)
+        for col in range(9, side - 8)
+        if not is_qr_function_cell(row, col, side)
+    ]
+    candidates.sort(
+        key=lambda cell: (
+            ((cell[0] * 73) ^ (cell[1] * 151) ^ (cell[0] * cell[1] * 17))
+            & 0xFFFF
+        )
+    )
+    positions = []
+    for _ in calibration_entries():
+        match = next(
+            cell
+            for cell in candidates
+            if cell not in positions
+            and carrier_is_dark(*cell)
+        )
+        positions.append(match)
+    return tuple(positions)
 
 
 def is_data_cell(row: int, col: int, side: int) -> bool:
-    return not (
-        in_finder_or_separator(row, col, side)
-        or in_alignment_pattern(row, col, side)
-        or in_timing_pattern(row, col, side)
-        or in_format_information(row, col, side)
-        or in_version_information(row, col, side)
-        or in_palette_swatch(row, col)
-        or (row == side - 8 and col == 8)
+    return (
+        not is_qr_function_cell(row, col, side)
+        and (row, col) not in calibration_positions(side)
+        and carrier_is_dark(row, col)
     )
+
+
+def carrier_is_dark(row: int, col: int) -> bool:
+    return qr_carrier_matrix()[row][col]
+
+
+@lru_cache(maxsize=1)
+def qr_carrier_matrix() -> tuple[tuple[bool, ...], ...]:
+    qr = qrcode.QRCode(
+        version=QR_VERSION,
+        error_correction=ERROR_CORRECT_L,
+        box_size=1,
+        border=0,
+    )
+    qr.add_data("GDC-V10-COLOR-CARRIER")
+    qr.make(fit=False)
+    matrix = tuple(tuple(bool(value) for value in row) for row in qr.get_matrix())
+    if len(matrix) != CONTENT_SIDE or any(len(row) != CONTENT_SIDE for row in matrix):
+        raise ValueError("Generated QR carrier has unexpected dimensions.")
+    return matrix
 
 
 @lru_cache(maxsize=None)
@@ -392,7 +429,11 @@ def symbol_to_rgb(symbol: int) -> tuple[int, int, int]:
     r_index = (symbol >> (BITS_PER_CHANNEL * 2)) & channel_mask
     g_index = (symbol >> BITS_PER_CHANNEL) & channel_mask
     b_index = symbol & channel_mask
-    return LEVEL_U8[r_index], LEVEL_U8[g_index], LEVEL_U8[b_index]
+    return (
+        DATA_LEVEL_U8[r_index],
+        DATA_LEVEL_U8[g_index],
+        DATA_LEVEL_U8[b_index],
+    )
 
 
 def filler_symbol(index: int) -> int:
@@ -411,68 +452,26 @@ def marker_is_black(row: int, col: int) -> bool:
     return distance_to_edge == 0 or distance_to_edge >= 2
 
 
-def draw_marker(pixels, top: int, left: int):
-    for row in range(MARKER_SIZE_BLOCKS):
-        for col in range(MARKER_SIZE_BLOCKS):
-            pixels[left + col, top + row] = (
-                (0, 0, 0) if marker_is_black(row, col) else (255, 255, 255)
-            )
-
-
-def draw_alignment_pattern(pixels, center_row: int, center_col: int):
-    radius = ALIGNMENT_PATTERN_SIZE // 2
-    for row_offset in range(-radius, radius + 1):
-        for col_offset in range(-radius, radius + 1):
-            distance = max(abs(row_offset), abs(col_offset))
-            black = distance in (0, radius)
-            pixels[center_col + col_offset, center_row + row_offset] = (
-                (0, 0, 0) if black else (255, 255, 255)
-            )
-
-
-def draw_qr_function_patterns(pixels, side: int):
-    # Timing tracks let a camera count and align modules like a QR scanner.
-    for col in range(8, side - 8):
-        pixels[col, 6] = (0, 0, 0) if col % 2 == 0 else (255, 255, 255)
-    for row in range(8, side - 8):
-        pixels[6, row] = (0, 0, 0) if row % 2 == 0 else (255, 255, 255)
-
-    for center_row, center_col in alignment_pattern_centers(side):
-        draw_alignment_pattern(pixels, center_row, center_col)
-
-    # Fixed protected-looking metadata bands. GDC's actual format lives in
-    # the Reed-Solomon stream, but these bands retain familiar QR geometry.
-    for row in range(side):
-        for col in range(side):
-            if in_format_information(row, col, side):
-                pixels[col, row] = (
-                    (0, 0, 0) if ((row * 3 + col * 5 + 1) % 2) else (255, 255, 255)
-                )
-            elif in_version_information(row, col, side):
-                pixels[col, row] = (
-                    (0, 0, 0) if ((row + col * 2) % 3) else (255, 255, 255)
-                )
-
-    pixels[8, side - 8] = (0, 0, 0)
-
-    # Draw finders last so their one-module white separators remain clean.
-    for top, left in finder_origins(side):
-        for row in range(max(0, top - 1), min(side, top + MARKER_SIZE_BLOCKS + 1)):
-            for col in range(max(0, left - 1), min(side, left + MARKER_SIZE_BLOCKS + 1)):
-                pixels[col, row] = (255, 255, 255)
-        draw_marker(pixels, top, left)
-
-
-def write_palette_swatches(pixels):
-    base = LEVEL_U8[0]
+def calibration_entries():
     for channel in range(3):
         for level_index in range(LEVEL_COUNT):
-            top, left = palette_swatch_origin(channel, level_index)
-            color = [base, base, base]
-            color[channel] = LEVEL_U8[level_index]
-            for row in range(top, top + PALETTE_SWATCH_SIZE):
-                for col in range(left, left + PALETTE_SWATCH_SIZE):
-                    pixels[col, row] = tuple(color)
+            yield channel, level_index
+
+
+def write_calibration_samples(pixels, side: int):
+    for (row, col), (channel, level_index) in zip(
+        calibration_positions(side),
+        calibration_entries(),
+    ):
+        color = [DATA_LEVEL_U8[0], DATA_LEVEL_U8[0], DATA_LEVEL_U8[0]]
+        color[channel] = DATA_LEVEL_U8[level_index]
+        pixels[col, row] = tuple(color)
+
+
+def draw_qr_carrier(pixels):
+    for row, matrix_row in enumerate(qr_carrier_matrix()):
+        for col, dark in enumerate(matrix_row):
+            pixels[col, row] = (0, 0, 0) if dark else (255, 255, 255)
 
 
 def stream_to_image(stream: bytes):
@@ -490,8 +489,8 @@ def stream_to_image(stream: bytes):
 
     core = Image.new("RGB", (CONTENT_SIDE, CONTENT_SIDE), (255, 255, 255))
     pixels = core.load()
-    draw_qr_function_patterns(pixels, CONTENT_SIDE)
-    write_palette_swatches(pixels)
+    draw_qr_carrier(pixels)
+    write_calibration_samples(pixels, CONTENT_SIDE)
 
     for index, (row, col) in enumerate(cells):
         symbol = symbols[index] if index < len(symbols) else filler_symbol(index)
@@ -561,20 +560,13 @@ def validate_marker(pixels, top: int, left: int, max_mismatch_ratio: float = 0.0
     return (mismatches / total) <= max_mismatch_ratio
 
 
-def read_palette_models(pixels, side: int):
-    models = []
-
-    for channel in range(3):
-        channel_refs = []
-        for level_index in range(LEVEL_COUNT):
-            top, left = palette_swatch_origin(channel, level_index)
-            values = [
-                pixels[col, row][channel]
-                for row in range(top, top + PALETTE_SWATCH_SIZE)
-                for col in range(left, left + PALETTE_SWATCH_SIZE)
-            ]
-            channel_refs.append(float(np.median(values)))
-        models.append(channel_refs)
+def read_calibration_models(pixels):
+    models = [[0.0] * LEVEL_COUNT for _ in range(3)]
+    for (row, col), (channel, level_index) in zip(
+        calibration_positions(CONTENT_SIDE),
+        calibration_entries(),
+    ):
+        models[channel][level_index] = float(pixels[col, row][channel])
     return models
 
 
@@ -597,7 +589,7 @@ def decode_symbols_from_core(core: Image.Image) -> list[int]:
         if not validate_marker(pixels, top, left):
             raise ValueError(f"{name.capitalize()} finder marker mismatch.")
 
-    red_refs, green_refs, blue_refs = read_palette_models(pixels, side)
+    red_refs, green_refs, blue_refs = read_calibration_models(pixels)
     symbols = []
     for row, col in iter_data_cells(side):
         red, green, blue = pixels[col, row]
@@ -1102,11 +1094,11 @@ def decode_photo():
 def show_capacity():
     clear_screen()
     print(f"=== GDC v{VERSION} QR-FIRST FIELD PROFILE ===\n")
+    print(f"QR carrier version: {QR_VERSION}")
     print(f"Content grid: {CONTENT_SIDE} x {CONTENT_SIDE} modules")
     print(f"Finder patterns: 3 x {MARKER_SIZE_BLOCKS} x {MARKER_SIZE_BLOCKS} modules")
     print(
-        f"Calibration swatches: 3 channels x {LEVEL_COUNT} levels "
-        f"x {PALETTE_SWATCH_SIZE}x{PALETTE_SWATCH_SIZE} modules"
+        f"Hidden calibration samples: 3 channels x {LEVEL_COUNT} dark levels"
     )
     print(f"Alignment patterns: {len(alignment_pattern_centers(CONTENT_SIDE))}")
     print(f"Rendered module size: {BLOCK_SIZE}px")
