@@ -78,8 +78,8 @@ rate for version 10 (65 modules wide including the quiet zone):
 | Profile | 5.8 px/module | 8.5 px/module | 12 px/module |
 |---|---|---|---|
 | 4 gray, M | ✅ 0.0% | ✅ 0.0% | ✅ 0.0% |
-| 8 gray, M | ✅ 0.6–3.1% | ✅ ≤0.2% | ✅ 0.0% |
-| 16 gray, L | ❌ 25–35% | ⚠️ 0.6–5.9% | ✅ ≤2.1% |
+| 8 gray, M | ✅ 0.4–2.2% | ✅ ≤0.3% | ✅ 0.0% |
+| 16 gray, L | ❌ 27–31% | ⚠️ 0.7–6.0% | ✅ ≤1.8% |
 | RGB 4, M | ❌ ~10% | ✅ <1% | ✅ 0.0% |
 
 **4 gray levels is the everyday default.** 8 gray levels suits good prints
