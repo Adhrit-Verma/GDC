@@ -268,7 +268,7 @@ def find_finders(gray: np.ndarray):
     scale = min(1.0, 1600 / max(gray.shape))
     if scale < 1:
         gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    _, binary = cv2.threshold(cv2.GaussianBlur(gray, (5, 5), 0), 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
     contours, hierarchy = cv2.findContours(binary, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     found = []
     # A finder is a dark ring holding a dark core: contour -> hole -> core.
@@ -408,8 +408,12 @@ def normalize(grid: np.ndarray, version: int, meta: int) -> np.ndarray:
 
 
 def quantize(values: np.ndarray, levels: int) -> np.ndarray:
-    """Nearest level after 1-D k-means, which absorbs print and camera tone curves."""
-    centers = np.linspace(0, 1, levels)
+    """Nearest level after 1-D k-means, which absorbs print and camera tone curves.
+
+    Whitening makes every level equally common, so quantile midpoints are a
+    start point that survives strongly non-linear tone curves.
+    """
+    centers = np.quantile(values, (np.arange(levels) + 0.5) / levels)
     for _ in range(8):
         index = np.abs(values[:, None] - centers).argmin(axis=1)
         centers = np.array([values[index == k].mean() if np.any(index == k) else centers[k] for k in range(levels)])
