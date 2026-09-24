@@ -420,14 +420,36 @@ def quantize(values: np.ndarray, levels: int) -> np.ndarray:
     return np.abs(values[:, None] - centers).argmin(axis=1)
 
 
+def read_levels(grid: np.ndarray, version: int, meta: int) -> np.ndarray:
+    """Level index of every data module and channel: (data modules, channels)."""
+    levels, mode, _ = unpack_meta(meta)
+    rows, cols = data_cells(version)
+    t = normalize(grid, version, meta)
+    if mode == "gray":
+        t = t.mean(axis=2, keepdims=True)
+    _, is_dark = function_pattern(version, meta)
+    index = np.empty((rows.size, t.shape[2]), int)
+    for c in range(t.shape[2]):
+        observed = values = t[rows, cols, c]
+        ideal = np.where(is_dark, 0.0, 1.0)
+        # Decision feedback: blur leaks neighbor values into each module. Fit
+        # that leak against the current decisions, subtract it, re-quantize.
+        for _ in range(3):
+            index[:, c] = quantize(values, levels)
+            ideal[rows, cols] = index[:, c] / (levels - 1)
+            p = np.pad(ideal, 1, constant_values=1.0)  # quiet zone is white
+            edge = (p[:-2, 1:-1] + p[2:, 1:-1] + p[1:-1, :-2] + p[1:-1, 2:])[rows, cols] / 4
+            corner = (p[:-2, :-2] + p[:-2, 2:] + p[2:, :-2] + p[2:, 2:])[rows, cols] / 4
+            design = np.stack([ideal[rows, cols], edge, corner, np.ones_like(edge)], axis=1)
+            coef = np.linalg.lstsq(design, observed, rcond=None)[0]
+            values = observed - design[:, 1:3] @ coef[1:3]
+    return index
+
+
 def decode_grid(grid: np.ndarray, version: int) -> bytes:
     meta = read_meta(grid, version)
     levels, mode, ecc = unpack_meta(meta)
-    rows, cols = data_cells(version)
-    values = normalize(grid, version, meta)[rows, cols]
-    if mode == "gray":
-        values = values.mean(axis=1, keepdims=True)
-    index = np.stack([quantize(values[:, c], levels) for c in range(values.shape[1])], axis=1)
+    index = read_levels(grid, version, meta)
     blocks, size, _ = rs_layout(version, levels, mode, ecc)
     stream = levels_to_stream(index.reshape(-1), bits_per_level(levels), blocks * size)
     return parse_stream(stream, version, levels, mode, ecc)
