@@ -4,6 +4,21 @@ This file records the known GDC format history. Versions without surviving
 source in this repository are marked explicitly instead of reconstructing
 details that cannot be verified.
 
+## Version 11 — Multilevel QR
+
+- Replaced the v10 hidden-payload design (dummy QR carrier plus a color layer)
+  with a single code: every data module carries a gray or RGB level.
+- Module file renamed `gdc_v10.py` → `gdc.py`; argparse CLI replaces the menu.
+- Standard QR geometry for all versions 1–40, built with `qrcode`; the profile
+  (levels 2/4/8/16, gray/RGB, ECC L/M/Q/H) is BCH-coded in the format area.
+- Reed-Solomon parity share per ECC level mirrors QR; 5-byte header with
+  CRC-16; whitening and Gray-coded levels.
+- Decoder: contour-hierarchy finders, automatic version detection,
+  alignment-pattern homography, lighting-surface normalization,
+  quantile-seeded k-means levels, blur-bleed decision feedback.
+- Capacity at 4 gray levels is ~2× the same-size QR code (40-L: 5,905 bytes
+  versus 2,953); 8 levels ~3×.
+
 ## Version 10 — QR carrier with GDC color data
 
 - Renamed the implementation from `gdc_v4.py` to `gdc_v10.py`.

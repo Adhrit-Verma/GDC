@@ -1,264 +1,71 @@
-"""Generate README animations from the real GDC encoder and decoder."""
+"""Regenerate README images from the real encoder: python -m tools.make_readme_assets"""
 
-from __future__ import annotations
-
-import tempfile
+import random
 from pathlib import Path
 
-import cv2
-import numpy as np
+import qrcode
 from PIL import Image, ImageDraw, ImageFont
 
-import gdc_v10 as gdc
+import gdc
+from test_gdc import camera
+
+OUTPUT = Path(__file__).resolve().parents[1] / "assets" / "readme"
+TILE = 360
+fill = random.Random(0).randbytes  # incompressible, reproducible
 
 
-ROOT = Path(__file__).resolve().parents[1]
-OUTPUT = ROOT / "assets" / "readme"
-REFERENCE = ROOT / "references" / "qr_reference.png"
-CANVAS_SIZE = 760
-HEADER_HEIGHT = 88
-FRAME_MS = 950
+def label(image: Image.Image, title: str, subtitle: str) -> Image.Image:
+    try:
+        big, small = ImageFont.truetype("arialbd.ttf", 22), ImageFont.truetype("arial.ttf", 17)
+    except OSError:
+        big = small = ImageFont.load_default()
+    card = Image.new("RGB", (TILE, TILE + 70), "white")
+    card.paste(image.convert("RGB").resize((TILE, TILE), Image.Resampling.NEAREST))
+    draw = ImageDraw.Draw(card)
+    draw.text((TILE // 2, TILE + 18), title, font=big, fill="#111827", anchor="mm")
+    draw.text((TILE // 2, TILE + 48), subtitle, font=small, fill="#4b5563", anchor="mm")
+    return card
 
 
-def font(size: int, bold: bool = False):
-    candidates = [
-        Path("C:/Windows/Fonts/seguisb.ttf" if bold else "C:/Windows/Fonts/segoeui.ttf"),
-        Path("C:/Windows/Fonts/arialbd.ttf" if bold else "C:/Windows/Fonts/arial.ttf"),
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return ImageFont.truetype(str(candidate), size)
-    return ImageFont.load_default()
-
-
-TITLE_FONT = font(34, bold=True)
-BODY_FONT = font(22)
-SMALL_FONT = font(18)
-
-
-def contain(image: Image.Image, width: int, height: int) -> Image.Image:
-    result = image.convert("RGB").copy()
-    result.thumbnail((width, height), Image.Resampling.LANCZOS)
-    return result
-
-
-def frame(title: str, subtitle: str, image: Image.Image) -> Image.Image:
-    canvas = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), "#f7f8fb")
-    draw = ImageDraw.Draw(canvas)
-    draw.rectangle((0, 0, CANVAS_SIZE, HEADER_HEIGHT), fill="#111827")
-    draw.text((24, 15), title, font=TITLE_FONT, fill="white")
-    draw.text((25, 55), subtitle, font=SMALL_FONT, fill="#cbd5e1")
-
-    visual = contain(image, CANVAS_SIZE - 56, CANVAS_SIZE - HEADER_HEIGHT - 48)
-    x = (CANVAS_SIZE - visual.width) // 2
-    y = HEADER_HEIGHT + (CANVAS_SIZE - HEADER_HEIGHT - visual.height) // 2
-    canvas.paste(visual, (x, y))
-    return canvas
-
-
-def message_frame(title: str, lines: list[str], accent: str = "#2563eb") -> Image.Image:
-    canvas = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), "#f7f8fb")
-    draw = ImageDraw.Draw(canvas)
-    draw.rectangle((0, 0, CANVAS_SIZE, HEADER_HEIGHT), fill="#111827")
-    draw.text((24, 15), title, font=TITLE_FONT, fill="white")
-    draw.rounded_rectangle(
-        (60, 150, CANVAS_SIZE - 60, CANVAS_SIZE - 110),
-        radius=28,
-        fill="white",
-        outline=accent,
-        width=5,
-    )
-    y = 210
-    for index, line in enumerate(lines):
-        draw.text(
-            (100, y),
-            line,
-            font=TITLE_FONT if index == 0 else BODY_FONT,
-            fill=accent if index == 0 else "#1f2937",
-        )
-        y += 68 if index == 0 else 48
-    return canvas
-
-
-def save_gif(frames: list[Image.Image], path: Path):
+def strip(cards, path: Path):
+    out = Image.new("RGB", (len(cards) * (TILE + 20) + 20, TILE + 90), "white")
+    for i, card in enumerate(cards):
+        out.paste(card, (20 + i * (TILE + 20), 10))
     path.parent.mkdir(parents=True, exist_ok=True)
-    indexed = [
-        item.convert("P", palette=Image.Palette.ADAPTIVE, colors=192)
-        for item in frames
-    ]
-    indexed[0].save(
-        path,
-        save_all=True,
-        append_images=indexed[1:],
-        duration=FRAME_MS,
-        loop=0,
-        optimize=True,
-        disposal=2,
-    )
+    out.save(path, optimize=True)
 
 
-def threshold_carrier(image: Image.Image) -> Image.Image:
-    logical = gdc.sample_grid_colors(
-        image,
-        gdc.fixed_side_blocks(),
-        gdc.fixed_side_blocks(),
-    )
-    start = gdc.QUIET_ZONE_BLOCKS
-    core = logical.crop(
-        (
-            start,
-            start,
-            start + gdc.CONTENT_SIDE,
-            start + gdc.CONTENT_SIDE,
-        )
-    )
-    array = np.asarray(core.convert("RGB"), dtype=np.uint8)
-    dark = array.mean(axis=2) < 128
-    binary = np.where(dark[:, :, None], 0, 255).astype(np.uint8)
-    binary = np.repeat(binary, 3, axis=2)
-    return Image.fromarray(binary).resize(
-        (gdc.fixed_core_size_px(), gdc.fixed_core_size_px()),
-        Image.Resampling.NEAREST,
-    )
-
-
-def make_qr_to_gdc():
-    payload = (
-        b"Gradient Dense Code: QR geometry with calibrated color data, "
-        b"compression, CRC32, and Reed-Solomon protection."
-    )
-    colored, *_ = gdc.stream_to_image(gdc.build_stream(payload))
-
-    carrier = Image.new(
-        "RGB",
-        (gdc.CONTENT_SIDE, gdc.CONTENT_SIDE),
-        "white",
-    )
-    pixels = carrier.load()
-    for row, matrix_row in enumerate(gdc.qr_carrier_matrix()):
-        for col, dark in enumerate(matrix_row):
-            pixels[col, row] = (0, 0, 0) if dark else (255, 255, 255)
-    carrier = carrier.resize(
-        (gdc.fixed_core_size_px(), gdc.fixed_core_size_px()),
-        Image.Resampling.NEAREST,
-    )
-
-    frames = [
-        frame(
-            "1. Standard QR reference",
-            "The familiar visual language: white background and three finders",
-            Image.open(REFERENCE),
-        ),
-        frame(
-            "2. Standards-generated carrier",
-            "GDC starts with a real QR Version 10 module matrix",
-            carrier,
-        ),
-        frame(
-            "3. GDC color payload",
-            "Only dark QR modules receive calibrated RGB values",
-            colored,
-        ),
-        frame(
-            "4. Threshold proof",
-            "Converted back to black and white, the exact QR carrier remains",
-            threshold_carrier(colored),
-        ),
-        message_frame(
-            "Two compatible layers",
-            [
-                "QR layer",
-                "Standard scanners read: GDC-V10-COLOR-CARRIER",
-                "GDC layer",
-                "The custom decoder recovers the color payload.",
-            ],
-            accent="#0f766e",
-        ),
-    ]
-    save_gif(frames, OUTPUT / "qr-to-gdc.gif")
-
-
-def perspective_photo(image: Image.Image) -> np.ndarray:
-    source = np.float32(
-        [
-            [0, 0],
-            [image.width - 1, 0],
-            [image.width - 1, image.height - 1],
-            [0, image.height - 1],
-        ]
-    )
-    size = image.width
-    destination = np.float32(
-        [
-            [size * 0.08, size * 0.06],
-            [size * 0.92, size * 0.02],
-            [size * 0.97, size * 0.93],
-            [size * 0.04, size * 0.98],
-        ]
-    )
-    transform = cv2.getPerspectiveTransform(source, destination)
-    bgr = cv2.cvtColor(np.asarray(image.convert("RGB")), cv2.COLOR_RGB2BGR)
-    return cv2.warpPerspective(
-        bgr,
-        transform,
-        (size, size),
-        borderValue=(225, 225, 225),
-    )
+def make_comparison():
+    """Same 57x57 version-10 footprint, M error correction, full capacity each."""
+    qr = qrcode.QRCode(version=10, error_correction=gdc.QR_ECC["M"], border=gdc.QUIET)
+    qr.add_data(fill(gdc.qr_capacity(10)), optimize=0)
+    qr.make(fit=False)
+    cards = [label(qr.make_image().get_image(), "Standard QR v10-M", f"{gdc.qr_capacity(10)} bytes")]
+    for levels in (4, 8):
+        payload = fill(gdc.capacity(10, levels))
+        cards.append(label(gdc.encode(payload, 10, levels, module_px=4),
+                           f"GDC v11, {levels} gray levels", f"{gdc.capacity(10, levels)} bytes"))
+    payload = fill(gdc.capacity(10, 4, "rgb"))
+    cards.append(label(gdc.encode(payload, 10, 4, "rgb", module_px=4), "GDC v11, RGB 4 levels",
+                       f"{gdc.capacity(10, 4, 'rgb')} bytes"))
+    strip(cards, OUTPUT / "qr-vs-gdc.png")
 
 
 def make_camera_recovery():
-    payload = b"GDC camera recovery demo: perspective corrected successfully."
-    encoded, *_ = gdc.stream_to_image(gdc.build_stream(payload))
-    photo = perspective_photo(encoded)
-
-    with tempfile.TemporaryDirectory() as directory:
-        photo_path = Path(directory) / "camera.jpg"
-        cv2.imwrite(str(photo_path), photo, [cv2.IMWRITE_JPEG_QUALITY, 82])
-        recovered_core = gdc.warp_photo_to_core(photo_path)
-        decoded = gdc.photo_to_payload(photo_path)
-
-    photo_rgb = Image.fromarray(cv2.cvtColor(photo, cv2.COLOR_BGR2RGB))
-    recovered_large = recovered_core.resize(
-        (gdc.fixed_core_size_px(), gdc.fixed_core_size_px()),
-        Image.Resampling.NEAREST,
-    )
-    decoded_text = decoded.decode("utf-8")
-
-    frames = [
-        frame(
-            "1. Encoded symbol",
-            "A GDC payload inside an exact QR visual carrier",
-            encoded,
-        ),
-        frame(
-            "2. Simulated camera capture",
-            "Perspective, resampling, and JPEG compression are introduced",
-            photo_rgb,
-        ),
-        frame(
-            "3. Geometric recovery",
-            "Finder and alignment patterns restore the module grid",
-            recovered_large,
-        ),
-        message_frame(
-            "4. Payload recovered",
-            [
-                "Decode successful",
-                decoded_text,
-                f"Protected capacity: {gdc.max_payload_bytes()} bytes",
-                "CRC32 and Reed-Solomon checks passed.",
-            ],
-            accent="#7c3aed",
-        ),
-    ]
-    save_gif(frames, OUTPUT / "camera-recovery.gif")
-
-
-def main():
-    make_qr_to_gdc()
-    make_camera_recovery()
-    print(f"Generated README assets in {OUTPUT}")
+    payload = b"GDC v11 camera recovery: perspective, blur, shading and JPEG corrected."
+    encoded = gdc.encode(payload, version=6)
+    photo = camera(encoded, width=700, rotate=1)
+    gray = gdc.cv2.cvtColor(photo, gdc.cv2.COLOR_BGR2GRAY)
+    grid = gdc.sample_modules(photo, gdc.rectify(gray, gdc.find_finders(gray), 6), 41)
+    assert gdc.decode(photo) == payload
+    strip([
+        label(encoded, "1. Encoded", "41x41 modules, 4 gray levels"),
+        label(Image.fromarray(photo[..., ::-1]), "2. Simulated capture", "rotation, perspective, JPEG"),
+        label(Image.fromarray(grid.clip(0, 255).astype("uint8")), "3. Rectified samples", "decoded + CRC verified"),
+    ], OUTPUT / "camera-recovery.png")
 
 
 if __name__ == "__main__":
-    main()
+    make_comparison()
+    make_camera_recovery()
+    print(f"Wrote README assets to {OUTPUT}")
