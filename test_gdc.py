@@ -7,14 +7,19 @@ import numpy as np
 import gdc
 
 
-def camera(image, width=900, blur=0.8, quality=80, shading=0.3, rotate=0):
-    """Simulated phone capture: rotation, perspective, blur, uneven light, JPEG."""
+def camera(image, width=900, blur=0.8, quality=80, shading=0.3, rotate=0, barrel=0.0):
+    """Simulated phone capture: rotation, perspective, lens barrel, blur, uneven light, JPEG."""
     bgr = np.rot90(cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR), rotate)
     bgr = cv2.resize(bgr, (width, width), interpolation=cv2.INTER_AREA)
     w = width
     src = np.float32([[0, 0], [w, 0], [w, w], [0, w]])
     dst = np.float32([[.06 * w, .05 * w], [.93 * w, .02 * w], [.97 * w, .95 * w], [.03 * w, .98 * w]])
     bgr = cv2.warpPerspective(bgr, cv2.getPerspectiveTransform(src, dst), (w, w), borderValue=(190, 185, 180))
+    if barrel:
+        y, x = (np.mgrid[0:w, 0:w].astype(np.float32) - w / 2) / (w / 2)
+        scale = 1 + barrel * (x * x + y * y)
+        bgr = cv2.remap(bgr, (x * scale + 1) * w / 2, (y * scale + 1) * w / 2, cv2.INTER_LINEAR,
+                        borderValue=(190, 185, 180))
     bgr = cv2.GaussianBlur(bgr, (0, 0), blur)
     light = np.linspace(1 - shading, 1, w)[None, :, None] * np.linspace(0.9, 1, w)[:, None, None]
     bgr = np.clip(bgr * light, 0, 255).astype(np.uint8)
@@ -56,6 +61,11 @@ class GDCTest(unittest.TestCase):
                 payload = os.urandom(gdc.capacity(*profile))
                 photo = camera(gdc.encode(payload, *profile), rotate=rotate)
                 self.assertEqual(gdc.decode(photo), payload)
+
+    def test_large_version_with_lens_distortion(self):
+        payload = os.urandom(gdc.capacity(40))
+        photo = camera(gdc.encode(payload, version=40), width=1600, blur=0.6, barrel=0.01)
+        self.assertEqual(gdc.decode(photo), payload)
 
     def test_reed_solomon_survives_covered_patch(self):
         payload = os.urandom(gdc.capacity(10, ecc="H"))

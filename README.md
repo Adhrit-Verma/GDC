@@ -6,7 +6,7 @@
 
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![GDC version](https://img.shields.io/badge/GDC-v11-7C3AED)](CHANGELOG.md)
-[![Tests](https://img.shields.io/badge/tests-6%20passing-16A34A)](test_gdc.py)
+[![Tests](https://img.shields.io/badge/tests-7%20passing-16A34A)](test_gdc.py)
 
 ![Same-size QR vs GDC](assets/readme/qr-vs-gdc.png)
 
@@ -55,8 +55,9 @@ standard format-information modules, so the decoder needs no settings.
 
 1. Find the three finders (ring → hole → core contour hierarchy).
 2. Estimate the version and fit an affine transform.
-3. Refine it into a homography by searching alignment patterns, working
-   outward from the finders.
+3. Refine it by searching alignment patterns, working outward from the
+   finders. The mapping is a homography plus a moving-least-squares residual
+   field, which absorbs mild lens distortion and paper curl.
 4. Sample the module centers.
 5. Correct uneven lighting with black/white surfaces fitted to the known
    function modules.
@@ -117,7 +118,8 @@ python -m unittest -v test_gdc
 
 The tests cover exact round trips across versions 1–40 at 4, 8 and 16 levels
 in gray and RGB, and density versus QR at every version and ECC level. They also run
-simulated camera captures at all four rotations and perspective, decode a
+simulated camera captures at all four rotations and perspective, decode
+version 40 under 1% lens barrel distortion, decode a
 code with a 6×6-module patch covered, and check that OpenCV's standard QR
 detector recognizes the symbol.
 
@@ -126,9 +128,9 @@ detector recognizes the symbol.
 - Only the GDC decoder reads the payload. Phone QR apps don't.
 - Real print and camera validation across printers, papers and phones is
   still needed. Please contribute photos.
-- Lens distortion on very large versions may need per-region warps instead of
-  one global homography.
-- Ideas: erasure decoding from level confidence, a live webcam scanner,
+- Versions above 25 tolerate about 1% barrel distortion when the code fills
+  the frame. Framing the code smaller in the shot keeps it within that.
+- Ideas: a live webcam scanner,
   perceptually spaced levels, CIELAB decoding for RGB.
 
 ## Files

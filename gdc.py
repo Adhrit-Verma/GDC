@@ -317,48 +317,98 @@ def alignment_template() -> np.ndarray:
     return ring.repeat(SAMPLE_PX, 0).repeat(SAMPLE_PX, 1)
 
 
-def locate_alignment(gray: np.ndarray, H: np.ndarray, x: float, y: float, radius: float):
+def fit_mapping(image_points, module_points, n: int, dense: bool = False):
+    """Callable (u, v) module coords -> (x, y) image pixels.
+
+    A homography carries perspective. Once there are enough control points,
+    a moving-least-squares field (Gaussian-weighted local affine) on its
+    residuals absorbs lens distortion and paper curl while staying bounded
+    far from the points. dense=True tabulates that field on the module
+    lattice for full-symbol sampling; otherwise it is evaluated once at the
+    query's center, which suits the small alignment-search patches.
+    """
+    image_points, module_points = np.float64(image_points), np.float64(module_points)
+    if len(image_points) == 3:
+        H = np.vstack([cv2.getAffineTransform(np.float32(module_points), np.float32(image_points)), [0, 0, 1]])
+    else:
+        H = cv2.findHomography(module_points, image_points, 0)[0]
+
+    def homography(u, v):
+        p = np.stack([u, v, np.ones_like(u)], axis=-1) @ H.T
+        return p[..., :2] / p[..., 2:]
+
+    def split(xy):
+        return xy[..., 0].astype(np.float32), xy[..., 1].astype(np.float32)
+
+    if len(image_points) < 5:
+        return lambda u, v: split(homography(u, v))
+
+    residual = image_points - homography(module_points[:, 0], module_points[:, 1])
+    sigma = n / np.sqrt(len(image_points))  # about the control-point spacing
+
+    def residual_at(q):
+        d = (module_points[None] - q[:, None]) / sigma
+        d2 = (d ** 2).sum(-1)
+        w = np.exp(-0.5 * (d2 - d2.min(axis=1, keepdims=True)))
+        D = np.concatenate([np.ones_like(d[..., :1]), d], axis=-1)
+        A = np.einsum("qn,qni,qnj->qij", w, D, D) + np.diag([0, 0.01, 0.01]) * w.sum(1)[:, None, None]
+        return np.linalg.solve(A, np.einsum("qn,qni,nc->qic", w, D, residual))[:, 0]
+
+    if not dense:
+        return lambda u, v: split(homography(u, v) + residual_at(np.array([[np.mean(u), np.mean(v)]]))[0])
+
+    lattice = np.arange(-QUIET, n + QUIET + 1, dtype=np.float64)
+    lu, lv = np.meshgrid(lattice, lattice)
+    field = residual_at(np.stack([lu.ravel(), lv.ravel()], 1)).reshape(*lu.shape, 2).astype(np.float32)
+
+    def mapping(u, v):
+        r = cv2.remap(field, np.float32(u + QUIET), np.float32(v + QUIET), cv2.INTER_LINEAR,
+                      borderMode=cv2.BORDER_REPLICATE)
+        return split(homography(u, v) + r)
+
+    return mapping
+
+
+def remap(image: np.ndarray, mapping, u0: float, v0: float, modules: float) -> np.ndarray:
+    """Resample the square of module coords [u0, u0 + modules) x [v0, v0 + modules) at SAMPLE_PX."""
+    g = (np.arange(round(modules * SAMPLE_PX)) + 0.5) / SAMPLE_PX
+    u, v = np.meshgrid(u0 + g, v0 + g)
+    return cv2.remap(image, *mapping(u, v), cv2.INTER_LINEAR, borderMode=cv2.BORDER_REPLICATE)
+
+
+def locate_alignment(gray: np.ndarray, mapping, x: float, y: float, radius: float):
     """Image point of the alignment pattern expected near module coords (x, y)."""
     half = radius + 2.5
-    size = round(2 * half * SAMPLE_PX)
-    to_patch = np.array([[SAMPLE_PX, 0, -(x - half) * SAMPLE_PX], [0, SAMPLE_PX, -(y - half) * SAMPLE_PX], [0, 0, 1]])
-    patch = cv2.warpPerspective(gray, to_patch @ H, (size, size), flags=cv2.INTER_LINEAR)
+    patch = remap(gray, mapping, x - half, y - half, 2 * half)
     scores = cv2.matchTemplate(patch, alignment_template(), cv2.TM_CCOEFF_NORMED)
     _, score, _, (bx, by) = cv2.minMaxLoc(scores)
     if score < 0.45:
         return None
-    found = np.array([[[x - half + bx / SAMPLE_PX + 2.5, y - half + by / SAMPLE_PX + 2.5]]])
-    return cv2.perspectiveTransform(found, np.linalg.inv(H))[0, 0]
+    found_x, found_y = mapping(np.array(x - half + bx / SAMPLE_PX + 2.5), np.array(y - half + by / SAMPLE_PX + 2.5))
+    return float(found_x), float(found_y)
 
 
-def rectify(gray: np.ndarray, finders, version: int) -> np.ndarray:
-    """Homography from image pixels to module coordinates."""
+def rectify(gray: np.ndarray, finders, version: int):
+    """Module-to-image mapping fitted to the finder and alignment patterns."""
     n = 17 + 4 * version
-    src = [f[0] for f in finders]
-    dst = [(3.5, 3.5), (n - 3.5, 3.5), (3.5, n - 3.5)]
-    H = np.vstack([cv2.getAffineTransform(np.float32(src), np.float32(dst)), [0, 0, 1]])
-    # ponytail: one global homography; per-region warps if lens distortion breaks large versions.
+    image_points = [f[0] for f in finders]
+    module_points = [(3.5, 3.5), (n - 3.5, 3.5), (3.5, n - 3.5)]
+    mapping = fit_mapping(image_points, module_points, n)
     # Walk outward from the finders so each search extrapolates the fit a short way.
     centers = alignment_centers(version)
     for x, y in centers:
-        point = locate_alignment(gray, H, x, y, radius=4 if len(centers) == 1 else 2)
-        if point is None:
-            continue
-        src.append(point)
-        dst.append((x, y))
-        if len(src) >= 4:
-            method = cv2.RANSAC if len(src) >= 5 else 0
-            found, _ = cv2.findHomography(np.float32(src), np.float32(dst), method, 0.7)
-            H = found if found is not None else H
-    return H
+        point = locate_alignment(gray, mapping, x, y, radius=4 if len(centers) == 1 else 2)
+        if point is not None:
+            image_points.append(point)
+            module_points.append((x, y))
+            mapping = fit_mapping(image_points, module_points, n)
+    return fit_mapping(image_points, module_points, n, dense=True)
 
 
-def sample_modules(bgr: np.ndarray, H: np.ndarray, n: int, margin: float = 0.3) -> np.ndarray:
+def sample_modules(bgr: np.ndarray, mapping, n: int, margin: float = 0.3) -> np.ndarray:
     """Mean RGB of every module center, quiet zone included: (n + 2Q, n + 2Q, 3)."""
     side = n + 2 * QUIET
-    to_grid = np.array([[SAMPLE_PX, 0, QUIET * SAMPLE_PX], [0, SAMPLE_PX, QUIET * SAMPLE_PX], [0, 0, 1]]) @ H
-    warped = cv2.warpPerspective(bgr, to_grid, (side * SAMPLE_PX,) * 2, flags=cv2.INTER_LINEAR,
-                                 borderMode=cv2.BORDER_REPLICATE)
+    warped = remap(bgr, mapping, -QUIET, -QUIET, side)
     a, b = int(SAMPLE_PX * margin), SAMPLE_PX - int(SAMPLE_PX * margin)
     cells = warped[..., ::-1].astype(np.float32).reshape(side, SAMPLE_PX, side, SAMPLE_PX, 3)
     return cells[:, a:b, :, a:b].mean(axis=(1, 3))

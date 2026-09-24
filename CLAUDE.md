@@ -18,7 +18,8 @@ QR geometry from `qrcode` internals (`function_pattern`), 5-bit profile
 header `>BHH` (version<<1|compressed, len, CRC-16) -> RS blocks (<=255, parity
 share per ECC level mirrors QR) -> interleave -> XOR shake_256 keystream ->
 Gray-coded levels in QR zigzag order. Decode: contour-hierarchy finders ->
-version estimate -> affine + alignment-pattern homography -> sample centers ->
+version estimate -> alignment search outward from finders -> mapping = homography +
+moving-least-squares residual (fit_mapping, dense lattice for sampling) -> sample centers ->
 fit black/white lighting surfaces on function modules -> 1-D k-means per channel.
 
 ## Conventions
@@ -30,4 +31,8 @@ fit black/white lighting surfaces on function modules -> 1-D k-means per channel
 
 ## Measured envelope (tools/benchmark.py, QR version-10 size, harsh print sim)
 4 gray: 0% SER down to 5.8 px/module. 8 gray: <=3%. 16 gray / RGB need >=8.5-12 px/module.
-Open ideas: RS erasures from level confidence, webcam scanner, CIELAB for RGB, per-region warps.
+Tried + reverted: RS erasures ranked by k-means decision margin - zero gain on the failure cliff
+(errors there are confident misreads). Also tried: global residual polynomial (unstable,
+degree-by-count overfits clustered points); alignment score 0.3 (false matches). Barrel
+limit: V40 ok at k=0.01 full-frame, k=0.02 fails (alignment templates mismatch near edges).
+Open ideas: webcam scanner, CIELAB for RGB.
