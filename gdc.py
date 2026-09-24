@@ -520,6 +520,26 @@ def decode(image) -> bytes:
     raise ValueError("Decoding failed. " + "; ".join(errors))
 
 
+def scan(camera: int = 0) -> bytes | None:
+    """Decode from a live camera, showing a preview; None if the user presses q."""
+    capture = cv2.VideoCapture(camera)
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                raise ValueError(f"Camera {camera} returned no frame.")
+            cv2.imshow("GDC scan - press q to quit", frame)
+            if cv2.waitKey(1) & 0xFF == ord("q"):
+                return None
+            try:
+                return decode(frame)
+            except ValueError:
+                pass  # keep scanning until a frame decodes
+    finally:
+        capture.release()
+        cv2.destroyAllWindows()
+
+
 # ---------------------------------------------------------------------------
 # Command line
 # ---------------------------------------------------------------------------
@@ -538,7 +558,10 @@ def main(argv=None):
 
     dec = sub.add_parser("decode", help="decode a PNG or camera photo")
     dec.add_argument("image", type=Path)
-    dec.add_argument("--output", type=Path, help="write bytes here instead of printing text")
+    sc = sub.add_parser("scan", help="decode live from a webcam")
+    sc.add_argument("--camera", type=int, default=0)
+    for command in (dec, sc):
+        command.add_argument("--output", type=Path, help="write bytes here instead of printing text")
 
     cap = sub.add_parser("capacity", help="compare capacity with standard QR")
     for command in (enc, cap):
@@ -552,9 +575,11 @@ def main(argv=None):
         image = encode(payload, args.version, args.levels, args.mode, args.ecc, args.module_px)
         image.save(args.output)
         print(f"Saved {args.output}: {len(payload)} bytes, {image.width}x{image.height}px")
-    elif args.command == "decode":
-        payload = decode(args.image)
-        if args.output:
+    elif args.command in ("decode", "scan"):
+        payload = decode(args.image) if args.command == "decode" else scan(args.camera)
+        if payload is None:
+            print("Scan cancelled.")
+        elif args.output:
             args.output.write_bytes(payload)
             print(f"Wrote {len(payload)} bytes to {args.output}")
         else:

@@ -6,7 +6,7 @@ symbol still looks like an everyday QR code. NOT a hidden layer under a dummy
 QR - that was v10, deliberately abandoned.
 
 ## Layout
-- `gdc.py` - whole format: layout, stream, encode, decode, CLI (`encode|decode|capacity`).
+- `gdc.py` - whole format: layout, stream, encode, decode, CLI (`encode|decode|scan|capacity`).
 - `test_gdc.py` - unittest suite (~3 s): exact round trips, density vs QR, camera sim, damage.
 - `tools/benchmark.py` - print+phone robustness sweep (SER per profile/resolution).
 - `tools/make_readme_assets.py` - regenerates `assets/readme/*.png` from the real encoder.
@@ -35,4 +35,4 @@ Tried + reverted: RS erasures ranked by k-means decision margin - zero gain on t
 (errors there are confident misreads). Also tried: global residual polynomial (unstable,
 degree-by-count overfits clustered points); alignment score 0.3 (false matches). Barrel
 limit: V40 ok at k=0.01 full-frame, k=0.02 fails (alignment templates mismatch near edges).
-Open ideas: webcam scanner, CIELAB for RGB.
+Open ideas: CIELAB for RGB, perceptual level spacing.

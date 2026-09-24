@@ -96,6 +96,7 @@ python gdc.py encode hello.png --text "Hello from GDC"          # smallest versi
 python gdc.py encode doc.png --file notes.txt --levels 8 --ecc Q
 python gdc.py decode hello.png                                   # PNG or camera photo
 python gdc.py decode photo.jpg --output recovered.bin
+python gdc.py scan                                             # live webcam, q to quit
 python gdc.py capacity --levels 4 --mode rgb
 ```
 
@@ -130,8 +131,7 @@ detector recognizes the symbol.
   still needed. Please contribute photos.
 - Versions above 25 tolerate about 1% barrel distortion when the code fills
   the frame. Framing the code smaller in the shot keeps it within that.
-- Ideas: a live webcam scanner,
-  perceptually spaced levels, CIELAB decoding for RGB.
+- Ideas: perceptually spaced levels, CIELAB decoding for RGB.
 
 ## Files
 
